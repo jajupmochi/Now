@@ -1,0 +1,323 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v1.2.3)"
+        required: false
+      channel:
+        description: "Flutter channel"
+        default: stable
+        required: false
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  FLUTTER_VERSION: '3.35.1'
+  FLUTTER_CHANNEL: stable
+  JAVA_VERSION: '17'
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  determine:
+    name: Determine release conditions
+    runs-on: ubuntu-latest
+    outputs:
+      DO_RELEASE: ${{ steps.out.outputs.DO_RELEASE }}
+      VERSION: ${{ steps.out.outputs.VERSION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute flags
+        id: out
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') && 'true' || 'false' }}
+          HEAD_MSG: ${{ github.event.head_commit.message || '' }}
+          PR_MERGED: ${{ github.event.pull_request.merged || false }}
+          PR_BASE: ${{ github.event.pull_request.base.ref || '' }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
+          INPUT_TAG: ${{ github.event.inputs.tag || '' }}
+        run: |
+          set -euo pipefail
+          do_release=false
+          version=""
+
+          if [ -n "$INPUT_TAG" ]; then
+            do_release=true
+            version="$INPUT_TAG"
+          fi
+
+          if [ "$IS_TAG" = "true" ]; then
+            do_release=true
+            version="${GITHUB_REF##*/}"
+          fi
+
+          if [ -z "$version" ] && echo "$HEAD_MSG" | grep -Eqi '\bv[0-9]+\.[0-9]+\.[0-9]+'; then
+            do_release=true
+            version=$(echo "$HEAD_MSG" | grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9._+-]*)?' | head -n1)
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$PR_MERGED" = "true" ] && [ "$PR_BASE" = "main" ] && [ "$PR_HEAD" = "cicd" ]; then
+            do_release=true
+          fi
+
+          if [ -z "$version" ] && [ -f pubspec.yaml ]; then
+            vsn=$(grep -E '^version:' pubspec.yaml | head -n1 | awk '{print $2}') || true
+            [ -n "$vsn" ] && version="v$vsn"
+          fi
+
+          [ -z "$version" ] && version="v0.0.0-${GITHUB_SHA:0:7}"
+
+          echo "DO_RELEASE=$do_release" >> $GITHUB_OUTPUT
+          echo "VERSION=$version" >> $GITHUB_OUTPUT
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    needs: determine
+    if: ${{ needs.determine.outputs.DO_RELEASE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ github.event.inputs.channel || env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - run: flutter pub get
+
+      - name: Decode keystore (optional)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 && secrets.ANDROID_KEYSTORE_PASSWORD && secrets.ANDROID_KEY_ALIAS && secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/key.jks
+          cat > android/key.properties <<'PROP'
+          storeFile=key.jks
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          PROP
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+      - run: flutter build apk --release --split-per-abi
+      - run: flutter build appbundle --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: |
+            build/app/outputs/flutter-apk/*-release.apk
+            build/app/outputs/bundle/release/*.aab
+
+      - name: Google Play (internal) if configured
+        if: ${{ secrets.GPLAY_SERVICE_ACCOUNT_JSON && secrets.GPLAY_PACKAGE_NAME }}
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GPLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ secrets.GPLAY_PACKAGE_NAME }}
+          releaseFiles: build/app/outputs/bundle/release/*.aab
+          track: internal
+          status: completed
+
+  web:
+    name: Web & Pages
+    runs-on: ubuntu-latest
+    needs: determine
+    if: ${{ needs.determine.outputs.DO_RELEASE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ github.event.inputs.channel || env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - run: |
+          flutter config --enable-web
+          flutter pub get
+          flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: build/web
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: build/web }
+      - uses: actions/deploy-pages@v4
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+    needs: determine
+    if: ${{ needs.determine.outputs.DO_RELEASE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libayatana-appindicator3-dev patchelf libfuse2 curl fakeroot dpkg-dev debhelper appstream
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ github.event.inputs.channel || env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+          flutter build linux --release
+
+      - name: Package linux
+        run: |
+          mkdir -p dist/linux
+          tar -C build/linux/x64/release/bundle -czf dist/linux/${{ needs.determine.outputs.VERSION }}-linux-x64.tar.gz .
+          curl -L https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -o appimagetool
+          chmod +x appimagetool
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
+          APPNAME="Now"
+          cat > AppDir/${APPNAME}.desktop <<EOF
+          [Desktop Entry]
+          Name=${APPNAME}
+          Exec=now
+          Icon=${APPNAME}
+          Type=Application
+          Categories=Utility;
+          EOF
+          cp assets/teasure_box_noncommercial.png AppDir/usr/share/icons/hicolor/256x256/apps/${APPNAME}.png || true
+          echo -e '#!/bin/sh\nHERE="$(dirname $(readlink -f "$0"))"\nexec "$HERE/usr/bin/now"' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+          ./appimagetool AppDir dist/linux/${{ needs.determine.outputs.VERSION }}-Now-x86_64.AppImage
+          APP=now
+          VERSION=${{ needs.determine.outputs.VERSION }}
+          mkdir -p dist/linux/deb/DEBIAN dist/linux/deb/usr/share/applications dist/linux/deb/usr/bin
+          cp -r build/linux/x64/release/bundle/* dist/linux/deb/usr/bin/
+          cat > dist/linux/deb/DEBIAN/control <<CTRL
+          Package: $APP
+          Version: ${VERSION#v}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: ${{ github.repository_owner }}
+          Description: Now Flutter app
+          CTRL
+          cat > dist/linux/deb/usr/share/applications/${APP}.desktop <<DST
+          [Desktop Entry]
+          Name=Now
+          Exec=now
+          Icon=now
+          Type=Application
+          Categories=Utility;
+          DST
+          fakeroot dpkg-deb --build dist/linux/deb dist/linux/${VERSION}-now-amd64.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/linux/*.tar.gz
+            dist/linux/*.AppImage
+            dist/linux/*.deb
+
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    needs: determine
+    if: ${{ needs.determine.outputs.DO_RELEASE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ github.event.inputs.channel || env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath dist\windows\${{ needs.determine.outputs.VERSION }}-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/windows/*.zip
+
+  ios:
+    name: iOS
+    runs-on: macos-14
+    needs: determine
+    if: ${{ needs.determine.outputs.DO_RELEASE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ github.event.inputs.channel || env.FLUTTER_CHANNEL }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - run: sudo gem install cocoapods -N
+      - working-directory: ios
+        run: pod install --repo-update
+      - run: flutter build ios --release --no-codesign
+      - run: |
+          mkdir -p dist/ios
+          tar -C build/ios/iphoneos -czf dist/ios/${{ needs.determine.outputs.VERSION }}-ios-app.tar.gz Runner.app || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: |
+            dist/ios/*.tar.gz
+            build/ios/ipa/*.ipa
+      - name: Upload to TestFlight/App Store (if configured)
+        if: ${{ secrets.APP_STORE_CONNECT_API_KEY && secrets.APP_STORE_CONNECT_API_ISSUER_ID && secrets.APP_STORE_CONNECT_KEY_ID }}
+        uses: apple-actions/upload-testflight-build@v1
+        with:
+          app-path: build/ios/ipa/*.ipa
+          issuer-id: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          api-private-key: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [determine, android, web, linux, windows, ios]
+    if: ${{ needs.determine.outputs.DO_RELEASE == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - id: notes
+        run: |
+          echo "Release ${{ needs.determine.outputs.VERSION }}" > RELEASE-NOTES.txt
+          echo >> RELEASE-NOTES.txt
+          echo "Artifacts:" >> RELEASE-NOTES.txt
+          find dist -maxdepth 2 -type f | sed 's/^/- /' >> RELEASE-NOTES.txt
+          echo "NOTES_PATH=RELEASE-NOTES.txt" >> $GITHUB_OUTPUT
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.determine.outputs.VERSION }}
+          tag_name: ${{ needs.determine.outputs.VERSION }}
+          body_path: ${{ steps.notes.outputs.NOTES_PATH }}
+          files: |
+            dist/**
