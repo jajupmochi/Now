@@ -194,11 +194,14 @@ jobs:
 
       - uses: actions/configure-pages@v5
         with:
-          enablement: true
+          enablement: false
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-pages-artifact@v3
         with: { path: build/web }
       - id: deployment
         uses: actions/deploy-pages@v4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   linux:
     name: Linux
