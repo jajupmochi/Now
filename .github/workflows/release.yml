@@ -168,9 +168,8 @@ jobs:
     name: Web & Pages
     runs-on: ubuntu-latest
     needs: determine
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      EFFECTIVE_PAGES_TOKEN: ${{ secrets.PAGES_TOKEN || github.token }}
     concurrency:
       group: pages
       cancel-in-progress: true
@@ -192,16 +191,14 @@ jobs:
           name: web
           path: build/web
 
-      - uses: actions/configure-pages@v5
+      # Deploy to gh-pages branch (branch-based Pages)
+      - name: Deploy Web to gh-pages
+        uses: peaceiris/actions-gh-pages@v3
         with:
-          enablement: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/upload-pages-artifact@v3
-        with: { path: build/web }
-      - id: deployment
-        uses: actions/deploy-pages@v4
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: build/web
+          commit_message: Deploy web for ${{ github.sha }} (${% raw %}{{% endraw %} needs.determine.outputs.VERSION ${% raw %}}{% endraw %})
+          force_orphan: true
 
   linux:
     name: Linux
