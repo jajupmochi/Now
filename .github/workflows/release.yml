@@ -106,8 +106,22 @@ jobs:
 
       - run: flutter pub get
 
+      - name: Detect Android keystore secrets
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD}" ] && [ -n "${ANDROID_KEY_ALIAS}" ] && [ -n "${ANDROID_KEY_PASSWORD}" ]; then
+            echo "present=true" >> $GITHUB_OUTPUT
+          else
+            echo "present=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Decode keystore (optional)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 && secrets.ANDROID_KEYSTORE_PASSWORD && secrets.ANDROID_KEY_ALIAS && secrets.ANDROID_KEY_PASSWORD }}
+        if: ${{ steps.keystore.outputs.present == 'true' }}
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/key.jks
           cat > android/key.properties <<'PROP'
@@ -129,8 +143,20 @@ jobs:
             build/app/outputs/flutter-apk/*-release.apk
             build/app/outputs/bundle/release/*.aab
 
+      - name: Detect Google Play credentials
+        id: gplay
+        env:
+          GPLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GPLAY_SERVICE_ACCOUNT_JSON }}
+          GPLAY_PACKAGE_NAME: ${{ secrets.GPLAY_PACKAGE_NAME }}
+        run: |
+          if [ -n "${GPLAY_SERVICE_ACCOUNT_JSON}" ] && [ -n "${GPLAY_PACKAGE_NAME}" ]; then
+            echo "present=true" >> $GITHUB_OUTPUT
+          else
+            echo "present=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Google Play (internal) if configured
-        if: ${{ secrets.GPLAY_SERVICE_ACCOUNT_JSON && secrets.GPLAY_PACKAGE_NAME }}
+        if: ${{ steps.gplay.outputs.present == 'true' }}
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.GPLAY_SERVICE_ACCOUNT_JSON }}
@@ -289,8 +315,21 @@ jobs:
           path: |
             dist/ios/*.tar.gz
             build/ios/ipa/*.ipa
+      - name: Detect App Store Connect credentials
+        id: asc
+        env:
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          if [ -n "${APP_STORE_CONNECT_API_KEY}" ] && [ -n "${APP_STORE_CONNECT_API_ISSUER_ID}" ] && [ -n "${APP_STORE_CONNECT_KEY_ID}" ]; then
+            echo "present=true" >> $GITHUB_OUTPUT
+          else
+            echo "present=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload to TestFlight/App Store (if configured)
-        if: ${{ secrets.APP_STORE_CONNECT_API_KEY && secrets.APP_STORE_CONNECT_API_ISSUER_ID && secrets.APP_STORE_CONNECT_KEY_ID }}
+        if: ${{ steps.asc.outputs.present == 'true' }}
         uses: apple-actions/upload-testflight-build@v1
         with:
           app-path: build/ios/ipa/*.ipa
