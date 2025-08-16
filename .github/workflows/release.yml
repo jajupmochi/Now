@@ -186,6 +186,9 @@ jobs:
           flutter pub get
           flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
+      - name: SPA fallback (404.html)
+        run: cp build/web/index.html build/web/404.html
+
       - uses: actions/upload-artifact@v4
         with:
           name: web
@@ -197,7 +200,9 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: build/web
-          commit_message: Deploy web for ${{ github.sha }} (${% raw %}{{% endraw %} needs.determine.outputs.VERSION ${% raw %}}{% endraw %})
+          publish_branch: gh-pages
+          enable_jekyll: false
+          commit_message: Deploy web for ${{ github.sha }} (${{ needs.determine.outputs.VERSION }})
           force_orphan: true
 
   linux:
