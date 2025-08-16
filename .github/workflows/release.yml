@@ -168,6 +168,12 @@ jobs:
     name: Web & Pages
     runs-on: ubuntu-latest
     needs: determine
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
 
@@ -187,9 +193,12 @@ jobs:
           path: build/web
 
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with: { path: build/web }
-      - uses: actions/deploy-pages@v4
+      - id: deployment
+        uses: actions/deploy-pages@v4
 
   linux:
     name: Linux
@@ -216,7 +225,9 @@ jobs:
         run: |
           mkdir -p dist/linux
           tar -C build/linux/x64/release/bundle -czf dist/linux/${{ needs.determine.outputs.VERSION }}-linux-x64.tar.gz .
-          curl -L https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage -o appimagetool
+          # Download appimagetool from a stable tag, fall back to continuous if needed
+          curl -fL https://github.com/AppImage/AppImageKit/releases/download/v13/appimagetool-x86_64.AppImage -o appimagetool || \
+          curl -fL https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -o appimagetool
           chmod +x appimagetool
           mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
           cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
@@ -297,8 +308,12 @@ jobs:
         with:
           channel: ${{ github.event.inputs.channel || env.FLUTTER_CHANNEL }}
           flutter-version: ${{ env.FLUTTER_VERSION }}
-      - run: sudo gem install cocoapods -N
-      - working-directory: ios
+      - name: Install CocoaPods (if Podfile exists)
+        if: ${{ hashFiles('ios/Podfile') != '' }}
+        run: sudo gem install cocoapods -N
+      - name: Pod install (if Podfile exists)
+        if: ${{ hashFiles('ios/Podfile') != '' }}
+        working-directory: ios
         run: pod install --repo-update
       - run: flutter build ios --release --no-codesign
       - run: |
@@ -336,6 +351,7 @@ jobs:
     name: GitHub Release
     runs-on: ubuntu-latest
     needs: [determine, android, web, linux, windows, ios]
+  if: ${{ always() }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
