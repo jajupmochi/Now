@@ -1,6 +1,6 @@
-# now
+# Now!
 
-I am procrastinating... Just do something now!
+I am procrastinating... Just do something ***Now!***
 
 ## Getting Started
 
