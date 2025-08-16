@@ -241,6 +241,8 @@ jobs:
           Categories=Utility;
           EOF
           cp assets/teasure_box_noncommercial.png AppDir/usr/share/icons/hicolor/256x256/apps/${APPNAME}.png || true
+          # Also place an icon at AppDir/${APPNAME}.png so appimagetool finds it by name
+          cp assets/teasure_box_noncommercial.png AppDir/${APPNAME}.png || true
           echo -e '#!/bin/sh\nHERE="$(dirname $(readlink -f "$0"))"\nexec "$HERE/usr/bin/now"' > AppDir/AppRun
           chmod +x AppDir/AppRun
           ./appimagetool AppDir dist/linux/${{ needs.determine.outputs.VERSION }}-Now-x86_64.AppImage
@@ -357,7 +359,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          merge-multiple: true
       - id: notes
         run: |
           echo "Release ${{ needs.determine.outputs.VERSION }}" > RELEASE-NOTES.txt
@@ -372,4 +373,7 @@ jobs:
           body_path: ${{ steps.notes.outputs.NOTES_PATH }}
           make_latest: true
           files: |
-            dist/**
+            dist/android/**
+            dist/linux/**
+            dist/windows/**
+            dist/ios/**
